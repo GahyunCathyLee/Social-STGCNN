@@ -66,13 +66,8 @@ def seq_to_nodes(seq_):
             
     return V.squeeze()
 
-def nodes_rel_to_nodes_abs(nodes,init_node):
-    nodes_ = np.zeros_like(nodes)
-    for s in range(nodes.shape[0]):
-        for ped in range(nodes.shape[1]):
-            nodes_[s,ped,:] = np.sum(nodes[:s+1,ped,:],axis=0) + init_node[ped,:]
-
-    return nodes_.squeeze()
+def nodes_rel_to_nodes_abs(nodes, init_node):
+    return (np.cumsum(nodes, axis=0) + init_node).squeeze()
 
 def closer_to_zero(current,new_v):
     dec =  min([(abs(current),current),(abs(new_v),new_v)])[1]

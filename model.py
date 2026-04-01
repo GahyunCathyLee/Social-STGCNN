@@ -62,9 +62,13 @@ class ConvTemporalGraphical(nn.Module):
             bias=bias)
 
     def forward(self, x, A):
-        assert A.size(0) == self.kernel_size
         x = self.conv(x)
-        x = torch.einsum('nctv,tvw->nctw', (x, A))
+        if A.dim() == 3:
+            assert A.size(0) == self.kernel_size
+            x = torch.einsum('nctv,tvw->nctw', (x, A))
+        else:  # batched: (N, T, V, V)
+            assert A.size(1) == self.kernel_size
+            x = torch.einsum('nctv,ntvw->nctw', (x, A))
         return x.contiguous(), A
     
 
@@ -155,7 +159,7 @@ class st_gcn(nn.Module):
         return x, A
 
 class social_stgcnn(nn.Module):
-    def __init__(self,n_stgcnn =1,n_txpcnn=1,input_feat=2,output_feat=5,
+    def __init__(self,n_stgcnn=1,n_txpcnn=1,input_feat=2,output_feat=5,
                  seq_len=8,pred_seq_len=12,kernel_size=3):
         super(social_stgcnn,self).__init__()
         self.n_stgcnn= n_stgcnn

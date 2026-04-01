@@ -1,0 +1,33 @@
+# configs/highd_baseline.yaml
+# Usage: python train.py --config configs/highd_baseline.yaml
+
+# dataset
+highd: true
+mmap_dir: data/highD/c2
+splits_dir: data/highD/splits
+feature_mode: baseline        # baseline | importance | Iy | dim | dimI
+
+# sequence length
+obs_seq_len: 6
+pred_seq_len: 15
+
+# model
+n_stgcnn: 1
+n_txpcnn: 5
+output_size: 5
+kernel_size: 3
+
+# training
+lr: 0.01
+lr_sh_rate: 150
+use_lrschd: true
+num_epochs: 100
+batch_size: 1024
+num_workers: 64
+clip_grad: 1.0
+
+# reproducibility
+seed: 0
+
+# checkpoint
+tag: c0-4

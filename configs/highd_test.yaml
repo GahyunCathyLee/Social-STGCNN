@@ -1,0 +1,5 @@
+# configs/highd_test.yaml
+# Usage: python test.py --config configs/highd_test.yaml
+
+checkpoint_glob: ./checkpoint/highd-baseline
+ksteps: 20

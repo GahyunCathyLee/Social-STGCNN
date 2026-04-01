@@ -1,6 +1,7 @@
 import os
 import math
 import sys
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -226,3 +227,189 @@ class TrajectoryDataset(Dataset):
 
         ]
         return out
+
+
+# =============================================================================
+# HighD graph dataset for Social-STGCNN
+# =============================================================================
+#
+# x_nb NB_DIM layout (13 features, stored by preprocess.py):
+#   [0] dx        [1] dy        [2] dvx       [3] dvy
+#   [4] dax       [5] day       [6] lc_state  [7] volume
+#   [8] size_bin  [9] gate      [10] I_x      [11] I_y   [12] I
+#
+# feature_mode → which nb indices to include
+NB_FEAT_IDX = {
+    'baseline':   [0, 1, 2, 3, 4, 5],
+    'importance': [0, 1, 2, 3, 4, 5, 12],
+    'Iy':         [0, 1, 2, 3, 4, 5, 11],
+    'dim':        [0, 1, 2, 3, 4, 5, 8],
+    'dimI':       [0, 1, 2, 3, 4, 5, 8, 11],
+}
+
+
+def get_input_size(feature_mode):
+    """Total node feature channels: len(nb_feat) + 1 (is_ego flag)."""
+    return len(NB_FEAT_IDX[feature_mode]) + 1
+
+
+class HighDGraphDataset(Dataset):
+    """Dataset for Social-STGCNN trained on highD mmap outputs.
+
+    Reads mmap files produced by preprocess.py and converts them into
+    graph tensors compatible with Social-STGCNN's train/test loop.
+
+    Node layout per graph (V = 9 nodes):
+        node 0      : ego vehicle
+        node 1..8   : neighbor slots (preceding, following, leftPreceding, …)
+
+    Feature vector per node (C = len(nb_feat_idx) + 1 channels):
+        ego   : [x_rel, y_rel, vx, vy, ax, ay, 0…(pad), is_ego=1]
+        neighbor : [nb_feat selected by feature_mode…, is_ego=0]
+        Ego features occupy the first 6 slots; extra nb-only slots are 0 for ego.
+
+    Returns the same 10-element tuple as TrajectoryDataset so that
+    train.py / test.py require minimal changes:
+        obs_traj       (V, 2, T_H)  – absolute ego+nb positions (nb = 0)
+        pred_traj_gt   (V, 2, T_F)  – absolute ego future (nb = 0)
+        obs_traj_rel   (V, 2, T_H)  – dummy zeros
+        pred_traj_rel  (V, 2, T_F)  – dummy zeros
+        non_linear_ped (V,)         – dummy zeros
+        loss_mask      (V, T_H+T_F) – ones for ego, zeros for nb
+        V_obs          (T_H, V, C)  – graph node features (observation)
+        A_obs          (T_H, V, V)  – normalized Laplacian (observation)
+        V_tr           (T_F, V, 2)  – ego future displacements (slot 0 only)
+        A_tr           (T_F, V, V)  – same adjacency as last obs timestep
+    """
+
+    def __init__(self, mmap_dir, feature_mode='baseline', pred_len=15,
+                 norm_lap_matr=True, indices_file=None):
+        """
+        Args:
+            mmap_dir      : directory containing x_ego.npy, x_nb.npy, etc.
+                            (output of preprocess.py)
+            feature_mode  : which neighbor feature subset to use
+            pred_len      : number of future timesteps to predict
+            norm_lap_matr : apply normalized Laplacian to adjacency matrix
+            indices_file  : path to a .npy file of integer indices that selects
+                            a subset of samples (e.g. data/highD/splits/train_indices.npy).
+                            None = use the full dataset.
+        """
+        super().__init__()
+        mmap_dir = Path(mmap_dir)
+        self.x_ego    = np.load(mmap_dir / 'x_ego.npy')                        # (N, T, 6)  ~178 MB → RAM
+        self.x_nb     = np.load(mmap_dir / 'x_nb.npy',       mmap_mode='r')  # (N, T, K, 13) ~3 GB → mmap
+        self.nb_mask  = np.load(mmap_dir / 'nb_mask.npy')                     # (N, T, K) bool ~59 MB → RAM
+        self.y        = np.load(mmap_dir / 'y.npy')                           # (N, Tf, 2)  ~99 MB → RAM
+        self.x_last   = np.load(mmap_dir / 'x_last_abs.npy')                  # (N, 2)       ~7 MB → RAM
+
+        assert feature_mode in NB_FEAT_IDX, \
+            f"feature_mode must be one of {list(NB_FEAT_IDX)}, got '{feature_mode}'"
+
+        # indices subset (None → all)
+        if indices_file is not None:
+            self.indices = np.load(indices_file).astype(np.int64)
+        else:
+            self.indices = None
+
+        self.nb_idx   = NB_FEAT_IDX[feature_mode]
+        self.nb_dim   = len(self.nb_idx)
+        self.C        = self.nb_dim + 1        # unified channel count (nb_dim + is_ego)
+        self.T_H      = self.x_ego.shape[1]
+        self.T_F      = min(pred_len, self.y.shape[1])
+        self.K        = self.x_nb.shape[2]    # 8 neighbor slots
+        self.V        = 1 + self.K            # 9 nodes total
+        self.norm_lap = norm_lap_matr
+
+    def __len__(self):
+        if self.indices is not None:
+            return len(self.indices)
+        return self.x_ego.shape[0]
+
+    def __getitem__(self, idx):
+        if self.indices is not None:
+            idx = int(self.indices[idx])
+        x_ego    = np.array(self.x_ego[idx],    np.float32)   # (T_H, 6)
+        x_nb     = np.array(self.x_nb[idx],     np.float32)   # (T_H, K, 13)
+        nb_mask  = np.array(self.nb_mask[idx],  bool)         # (T_H, K)
+        y        = np.array(self.y[idx],        np.float32)   # (Tf, 2)
+        norm_ctr = np.array(self.x_last[idx],   np.float32)   # (2,)
+
+        # ── V_obs: (T_H, V, C) ────────────────────────────────────────────────
+        V_obs = np.zeros((self.T_H, self.V, self.C), np.float32)
+
+        # ego node (index 0): first 6 channels = x_ego features; last channel = is_ego=1
+        V_obs[:, 0, :6]         = x_ego
+        V_obs[:, 0, self.C - 1] = 1.0
+
+        # neighbor nodes (index 1..K): selected nb features; last channel = is_ego=0
+        nb_sel = x_nb[:, :, self.nb_idx]   # (T_H, K, nb_dim)
+        V_obs[:, 1:, :self.nb_dim] = nb_sel
+
+        # zero out absent neighbor slots
+        absent = ~nb_mask                  # (T_H, K)
+        V_obs[:, 1:, :][absent] = 0.0
+
+        # ── A_obs: (T_H, V, V) normalized Laplacian ──────────────────────────
+        A_obs = self._build_adj(nb_mask)   # (T_H, V, V)
+
+        # ── V_tr: (T_F, V, 2) — ego future relative displacements ────────────
+        # y[t] = absolute future pos relative to norm_ctr (ego's last obs pos)
+        # displacement at step t: y[t] - y[t-1]  (y[-1] ≡ 0 since norm_ctr is ref)
+        y_pad = np.concatenate([np.zeros((1, 2), np.float32), y[:self.T_F]], axis=0)
+        ego_disp = y_pad[1:] - y_pad[:-1]  # (T_F, 2)
+
+        V_tr = np.zeros((self.T_F, self.V, 2), np.float32)
+        V_tr[:, 0, :] = ego_disp           # only ego slot populated
+
+        # ── A_tr: (T_F, V, V) — replicate last obs adjacency ─────────────────
+        A_tr = np.broadcast_to(A_obs[-1:], (self.T_F, self.V, self.V)).copy()
+
+        # ── auxiliary tensors for test.py metrics ────────────────────────────
+        # obs_traj (V, 2, T_H): absolute positions; only ego is valid
+        obs_traj = np.zeros((self.V, 2, self.T_H), np.float32)
+        obs_traj[0, :, :] = (x_ego[:, :2] + norm_ctr).T   # (2, T_H)
+
+        # pred_traj_gt (V, 2, T_F): absolute future; only ego is valid
+        pred_traj_gt = np.zeros((self.V, 2, self.T_F), np.float32)
+        pred_traj_gt[0, :, :] = (y[:self.T_F] + norm_ctr).T  # (2, T_F)
+
+        loss_mask = np.zeros((self.V, self.T_H + self.T_F), np.float32)
+        loss_mask[0, :] = 1.0              # supervise ego only
+
+        return [
+            torch.from_numpy(obs_traj),                                    # (V, 2, T_H)
+            torch.from_numpy(pred_traj_gt),                                # (V, 2, T_F)
+            torch.zeros(self.V, 2, self.T_H),                             # obs_traj_rel (dummy)
+            torch.zeros(self.V, 2, self.T_F),                             # pred_traj_gt_rel (dummy)
+            torch.zeros(self.V),                                           # non_linear_ped (dummy)
+            torch.from_numpy(loss_mask),                                   # (V, T_H+T_F)
+            torch.from_numpy(V_obs),                                       # (T_H, V, C)
+            torch.from_numpy(A_obs),                                       # (T_H, V, V)
+            torch.from_numpy(V_tr),                                        # (T_F, V, 2)
+            torch.from_numpy(A_tr),                                        # (T_F, V, V)
+        ]
+
+    def _build_adj(self, nb_mask):
+        """Build normalized Laplacian adjacency per timestep.
+
+        Binary structure: ego (0) is connected to every present neighbor.
+        Self-loops included before normalization.
+        nb_mask: (T_H, K) bool
+        Returns: (T_H, V, V) float32
+        """
+        # adj: (T_H, V, V) — start with identity (self-loops)
+        adj = np.eye(self.V, dtype=np.float64)[None].repeat(self.T_H, axis=0)
+        for k in range(self.K):
+            present = nb_mask[:, k]          # (T_H,) bool
+            adj[present, 0, k + 1] = 1.0
+            adj[present, k + 1, 0] = 1.0
+
+        if self.norm_lap:
+            degree = adj.sum(axis=2)         # (T_H, V)
+            d_inv_sqrt = np.where(degree > 0, 1.0 / np.sqrt(degree), 0.0)
+            eye = np.eye(self.V, dtype=np.float64)[None]
+            L = eye - d_inv_sqrt[:, :, None] * adj * d_inv_sqrt[:, None, :]
+            return L.astype(np.float32)
+        else:
+            return adj.astype(np.float32)
