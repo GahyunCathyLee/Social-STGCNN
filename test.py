@@ -15,8 +15,96 @@ from model import social_stgcnn
 from config_utils import load_config_and_parse
 from tqdm import tqdm
 import copy
+import pandas as pd
+from pathlib import Path
+from collections import defaultdict
 
-def test(KSTEPS=20):
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario label helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def load_scenario_labels(path):
+    path = Path(path)
+    if not path.exists():
+        print(f"[WARN] scenario_labels not found: {path}")
+        return None
+    df = pd.read_csv(path)
+    required = {"recordingId", "trackId", "t0_frame"}
+    missing = required - set(df.columns)
+    if missing:
+        print(f"[WARN] scenario_labels missing columns {missing}")
+        return None
+    has_event = "event_label" in df.columns
+    has_state = "state_label" in df.columns
+    if not has_event and not has_state:
+        print("[WARN] scenario_labels has no event_label/state_label")
+        return None
+    lut = {}
+    for row in df.itertuples(index=False):
+        key = (int(row.recordingId), int(row.trackId), int(row.t0_frame))
+        lut[key] = {
+            "event_label": getattr(row, "event_label", None) if has_event else None,
+            "state_label": getattr(row, "state_label", None) if has_state else None,
+        }
+    print(f"[INFO] Loaded scenario labels: {len(lut):,} entries from {path}")
+    return lut
+
+
+def build_sample_label_list(mmap_dir, indices, labels_lut):
+    mmap_dir = Path(mmap_dir)
+    meta_rec   = np.load(mmap_dir / "meta_recordingId.npy", mmap_mode='r')
+    meta_track = np.load(mmap_dir / "meta_trackId.npy",     mmap_mode='r')
+    meta_frame = np.load(mmap_dir / "meta_frame.npy",       mmap_mode='r')
+    sample_labels = []
+    for idx in indices:
+        key = (int(meta_rec[idx]), int(meta_track[idx]), int(meta_frame[idx]))
+        sample_labels.append(labels_lut.get(key))
+    return sample_labels
+
+
+def _sep(widths, left="+", mid="+", right="+", fill="-"):
+    return left + mid.join(fill * w for w in widths) + right
+
+
+def print_scenario_results(stats, label_type):
+    if not stats:
+        return
+    rows = sorted(stats.items(), key=lambda x: (x[0] == "unknown", x[0]))
+    c_lbl = max(len(lbl) for lbl, _ in rows)
+    c_lbl = max(c_lbl, len(label_type)) + 2
+    c_n = 9
+    c_m = 11
+    ws = [c_lbl, c_n, c_m, c_m, c_m]
+
+    print(f"\n====== Scenario Results [{label_type}] ======")
+    print(_sep(ws))
+    print(f"|{label_type:^{c_lbl}}|{'n':^{c_n}}"
+          f"|{'ADE':^{c_m}}|{'FDE':^{c_m}}|{'RMSE':^{c_m}}|")
+    print(_sep(ws))
+
+    for lbl, (sa, sf, sr, n) in rows:
+        if n == 0:
+            continue
+        print(f"|{lbl:^{c_lbl}}|{n:^{c_n},}"
+              f"|{sa/n:^{c_m}.4f}|{sf/n:^{c_m}.4f}|{sr/n:^{c_m}.4f}|")
+    print(_sep(ws))
+
+    total_sa = sum(v[0] for v in stats.values())
+    total_sf = sum(v[1] for v in stats.values())
+    total_sr = sum(v[2] for v in stats.values())
+    total_n = sum(v[3] for v in stats.values())
+    N = max(1, total_n)
+    print(f"|{'Total':^{c_lbl}}|{total_n:^{c_n},}"
+          f"|{total_sa/N:^{c_m}.4f}|{total_sf/N:^{c_m}.4f}|{total_sr/N:^{c_m}.4f}|")
+    print(_sep(ws))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Test function
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test(KSTEPS=20, sample_labels=None):
     global loader_test, model, args
     model.eval()
     ade_bigls  = []
@@ -24,6 +112,10 @@ def test(KSTEPS=20):
     rmse_bigls = []
     raw_data_dict = {}
     step = 0
+
+    ev_stats = defaultdict(lambda: [0.0, 0.0, 0.0, 0])
+    st_stats = defaultdict(lambda: [0.0, 0.0, 0.0, 0])
+    sample_cursor = 0
 
     pbar = tqdm(loader_test, desc='Test', leave=True)
     with torch.no_grad():
@@ -75,9 +167,30 @@ def test(KSTEPS=20):
                     ade_all[k] = dist.mean(axis=1).squeeze(-1)
                     fde_all[k] = dist[:, -1, :].squeeze(-1)
 
-                ade_bigls.extend(ade_all.min(axis=0).tolist())
-                fde_bigls.extend(fde_all.min(axis=0).tolist())
+                batch_ade  = ade_all.min(axis=0)   # (B,)
+                batch_fde  = fde_all.min(axis=0)   # (B,)
+
+                ade_bigls.extend(batch_ade.tolist())
+                fde_bigls.extend(batch_fde.tolist())
                 rmse_bigls.extend(rmse_per.tolist())
+
+                # Per-scenario accumulation
+                if sample_labels is not None:
+                    for i in range(B):
+                        if sample_cursor + i >= len(sample_labels):
+                            break
+                        lab = sample_labels[sample_cursor + i]
+                        if lab is None:
+                            continue
+                        ev = lab.get("event_label") or "unknown"
+                        st = lab.get("state_label") or "unknown"
+                        for acc, lbl in ((ev_stats, ev), (st_stats, st)):
+                            acc[lbl][0] += float(batch_ade[i])
+                            acc[lbl][1] += float(batch_fde[i])
+                            acc[lbl][2] += float(rmse_per[i])
+                            acc[lbl][3] += 1
+
+                sample_cursor += B
 
             else:
                 # ── pedestrian: batch_size=1, per-sample processing ──────────
@@ -126,7 +239,7 @@ def test(KSTEPS=20):
     ade_  = sum(ade_bigls)  / len(ade_bigls)
     fde_  = sum(fde_bigls)  / len(fde_bigls)
     rmse_ = sum(rmse_bigls) / len(rmse_bigls)
-    return ade_, fde_, rmse_, raw_data_dict
+    return ade_, fde_, rmse_, raw_data_dict, ev_stats, st_stats
 
 
 test_parser = argparse.ArgumentParser()
@@ -139,6 +252,8 @@ test_parser.add_argument('--batch_size', type=int, default=1024,
                          help='batch size for test DataLoader (highD only; pedestrian uses 1)')
 test_parser.add_argument('--num_workers', type=int, default=64,
                          help='number of DataLoader worker processes')
+test_parser.add_argument('--scenario_labels', type=str, default=None,
+                         help='Path to scenario_labels.csv for per-scenario breakdown')
 test_args = load_config_and_parse(test_parser)
 
 if test_args.checkpoint_glob is None:
@@ -206,14 +321,34 @@ for feta in range(len(paths)):
                 kernel_size=args.kernel_size, pred_seq_len=args.pred_seq_len).cuda()
         model.load_state_dict(torch.load(model_path))
 
+        # Build scenario labels
+        sample_labels = None
+        if getattr(args, 'highd', False):
+            scenario_labels_path = test_args.scenario_labels
+            if scenario_labels_path is None:
+                candidate = Path(args.mmap_dir) / 'scenario_labels.csv'
+                if candidate.exists():
+                    scenario_labels_path = str(candidate)
+            if scenario_labels_path:
+                labels_lut = load_scenario_labels(scenario_labels_path)
+                if labels_lut is not None:
+                    sample_labels = build_sample_label_list(
+                        args.mmap_dir, dset_test.indices, labels_lut)
+
         ade_  = 999999
         fde_  = 999999
         rmse_ = 999999
         print("Testing ....")
-        ad, fd, rm, raw_data_dic_ = test()
+        ad, fd, rm, raw_data_dic_, ev_stats, st_stats = test(
+            KSTEPS=KSTEPS, sample_labels=sample_labels)
         ade_  = min(ade_,  ad)
         fde_  = min(fde_,  fd)
         rmse_ = min(rmse_, rm)
         ade_ls.append(ade_)
         fde_ls.append(fde_)
         print(f"\nADE: {ade_:.4f}  FDE: {fde_:.4f}  RMSE: {rmse_:.4f}")
+
+        if ev_stats:
+            print_scenario_results(ev_stats, label_type="Event")
+        if st_stats:
+            print_scenario_results(st_stats, label_type="State")
