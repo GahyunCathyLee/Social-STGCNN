@@ -3,9 +3,9 @@
 
 # dataset
 highd: true
-mmap_dir: data/highD/c2
+mmap_dir: data/highD/c7
 splits_dir: data/highD/splits
-feature_mode: Iy        # baseline | importance | Iy | dim | dimI
+feature_mode: dimI        # baseline | importance | Iy | dim | dimI
 
 # sequence length
 obs_seq_len: 6
@@ -27,7 +27,7 @@ num_workers: 64
 clip_grad: 1.0
 
 # reproducibility
-seed: 3407
+seed: 42
 
 # checkpoint
-tag: c2-3
+tag: c7-1
