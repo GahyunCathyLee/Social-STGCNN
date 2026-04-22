@@ -122,30 +122,43 @@ SLOT_WEIGHTS = [0.4944, 0.0411, 0.0935, 0.0074, 0.0002, 0.5559, 0.0000, 0.1179]
 
 # No-LC case: weights by ego lane level  (0=leftmost/fast, 1=middle, 2=rightmost/slow)
 SLOT_WEIGHTS_BY_LANE_LEVEL = [
-    [0.4657, 0.0163, 0.0000, 0.0000, 0.0000, 0.4357, 0.0035, 0.0788],  # ll0 leftmost
-    [0.4240, 0.0346, 0.3347, 0.0197, 0.1859, 0.0007, 0.0002, 0.0001],  # ll1 middle
-    [0.3846, 0.0141, 0.3593, 0.0345, 0.2070, 0.0000, 0.0000, 0.0000],  # ll2 rightmost
+    [0.4255, 0.0336, 0.0000, 0.0000, 0.0000, 0.4574, 0.0119, 0.1190],  # ll0 leftmost
+    [0.4805, 0.0002, 0.0000, 0.0000, 0.0000, 0.3803, 0.0234, 0.1839],  # ll1 middle
+    [0.4784, 0.0373, 0.3344, 0.0343, 0.2050, 0.0000, 0.0000, 0.0000],  # ll2 rightmost
 ]
 
-# LC-in-history case: pre-LC weights per lc_type (0-5)
+# LC-in-history case: pre-LC weights per LC group (G0-G3)
+# Order: preceding, following, leftPreceding, leftAlongside, leftFollowing,
+#        rightPreceding, rightAlongside, rightFollowing
+# G0: leftmost→right  (lct0 leftmost→middle,    lct1 leftmost→rightmost)
+# G1: middle→right    (lct3 middle→rightmost,    lct6 middle→middle(right))
+# G2: middle→left     (lct2 middle→leftmost,     lct7 middle→middle(left))
+# G3: rightmost→left  (lct4 rightmost→leftmost,  lct5 rightmost→middle)
 SLOT_WEIGHTS_PRE_LC = [
-    [0.0000, 0.0037, 0.0000, 0.0000, 0.0000, 0.2718, 0.1157, 0.6089],  # lct0 leftmost→middle
-    [0.7023, 0.1658, 0.0000, 0.0000, 0.0000, 0.1251, 0.0049, 0.0019],  # lct1 leftmost→rightmost
-    [0.3170, 0.0117, 0.0033, 0.0003, 0.0005, 0.5215, 0.0168, 0.1289],  # lct2 middle→leftmost
-    [0.0367, 0.0057, 0.4062, 0.1076, 0.4435, 0.0000, 0.0000, 0.0001],  # lct3 middle→rightmost
-    [0.9996, 0.0002, 0.0001, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000],  # lct4 rightmost→leftmost
-    [0.0048, 0.0000, 0.5762, 0.1229, 0.2962, 0.0000, 0.0000, 0.0000],  # lct5 rightmost→middle
+    [0.0001, 0.0000, 0.0000, 0.0000, 0.0000, 0.6253, 0.2663, 0.3117],  # G0 leftmost→right
+    [0.0072, 0.0263, 0.0006, 0.0000, 0.0000, 0.3970, 0.3776, 0.5494],  # G1 middle→right
+    [0.0183, 0.1326, 0.6745, 0.5179, 0.2365, 0.0000, 0.0000, 0.0000],  # G2 middle→left
+    [0.0381, 0.0233, 0.5755, 0.3548, 0.4799, 0.0000, 0.0000, 0.0000],  # G3 rightmost→left
 ]
 
-# LC-in-history case: post-LC weights per lc_type (0-5)
+# LC-in-history case: post-LC weights per LC group (G0-G3)
 SLOT_WEIGHTS_POST_LC = [
-    [0.0017, 0.0074, 0.0026, 0.0011, 0.0109, 0.4849, 0.0611, 0.4303],  # lct0 leftmost→middle
-    [0.0478, 0.0078, 0.7227, 0.0393, 0.1825, 0.0000, 0.0000, 0.0000],  # lct1 leftmost→rightmost
-    [0.8647, 0.0680, 0.0000, 0.0000, 0.0000, 0.0527, 0.0042, 0.0103],  # lct2 middle→leftmost
-    [0.0557, 0.9204, 0.0001, 0.0001, 0.0237, 0.0000, 0.0000, 0.0000],  # lct3 middle→rightmost
-    [0.0002, 0.0001, 0.0000, 0.0000, 0.0000, 0.9557, 0.0427, 0.0013],  # lct4 rightmost→leftmost
-    [0.0125, 0.0334, 0.0001, 0.0016, 0.0006, 0.2424, 0.0296, 0.6799],  # lct5 rightmost→middle
+    [0.0460, 0.3983, 0.0000, 0.0023, 0.0762, 0.2338, 0.2022, 0.3281],  # G0 leftmost→right
+    [0.1036, 0.0851, 0.4832, 0.0540, 0.3810, 0.0013, 0.0000, 0.0002],  # G1 middle→right
+    [0.6018, 0.3591, 0.0115, 0.0013, 0.0099, 0.1709, 0.0069, 0.0014],  # G2 middle→left
+    [0.2618, 0.0000, 0.0036, 0.0000, 0.0000, 0.6545, 0.2032, 0.1449],  # G3 rightmost→left
 ]
+
+# lc_type → LC group index  (G0=0, G1=1, G2=2, G3=3)
+# lc_type: 0=leftmost→middle, 1=leftmost→rightmost, 2=middle→leftmost,
+#           3=middle→rightmost, 4=rightmost→leftmost, 5=rightmost→middle,
+#           6=middle→middle(right), 7=middle→middle(left)
+_LC_TYPE_TO_GROUP: Dict[int, int] = {
+    0: 0, 1: 0,  # G0 leftmost→right
+    3: 1, 6: 1,  # G1 middle→right
+    2: 2, 7: 2,  # G2 middle→left
+    4: 3, 5: 3,  # G3 rightmost→left
+}
 
 # (from_level, to_level) → lc_type  (mirrors analyze_lane_level.py)
 _LC_TYPE_MAP_LEVEL: Dict[Tuple[int, int], int] = {
@@ -228,10 +241,13 @@ def _get_slot_weight(
 ) -> float:
     """slot ki / timestep ti에 대응하는 조건부 slot weight를 반환."""
     if lc_frame_ti is not None and lc_type >= 0:
+        lc_group = _LC_TYPE_TO_GROUP.get(lc_type, -1)
+        if lc_group < 0:
+            return SLOT_WEIGHTS[ki]  # unknown lc_type fallback
         if ti < lc_frame_ti:
-            return SLOT_WEIGHTS_PRE_LC[lc_type][ki]
+            return SLOT_WEIGHTS_PRE_LC[lc_group][ki]
         else:
-            return SLOT_WEIGHTS_POST_LC[lc_type][ki]
+            return SLOT_WEIGHTS_POST_LC[lc_group][ki]
     elif 0 <= lane_level <= 2:
         return SLOT_WEIGHTS_BY_LANE_LEVEL[lane_level][ki]
     else:
