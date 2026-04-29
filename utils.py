@@ -233,18 +233,16 @@ class TrajectoryDataset(Dataset):
 # HighD graph dataset for Social-STGCNN
 # =============================================================================
 #
-# x_nb NB_DIM layout (13 features, stored by preprocess.py):
-#   [0] dx        [1] dy        [2] dvx       [3] dvy
-#   [4] dax       [5] day       [6] lc_state  [7] volume
-#   [8] size_bin  [9] gate      [10] I_x      [11] I_y   [12] I
+# x_nb NB_DIM layout (10 features, stored by preprocess.py):
+#   [0] dx  [1] dy  [2] dvx  [3] dvy  [4] dax  [5] day  [6] s_x  [7] s_y  [8] dim  [9] I
 #
 # feature_mode → which nb indices to include
 NB_FEAT_IDX = {
     'baseline':   [0, 1, 2, 3, 4, 5],
-    'importance': [0, 1, 2, 3, 4, 5, 12],
-    'Iy':         [0, 1, 2, 3, 4, 5, 11],
+    'importance': [0, 1, 2, 3, 4, 5, 9],
+    'Iy':         [0, 1, 2, 3, 4, 5, 9],  # legacy alias: I
     'dim':        [0, 1, 2, 3, 4, 5, 8],
-    'dimI':       [0, 1, 2, 3, 4, 5, 8, 11],
+    'dimI':       [0, 1, 2, 3, 4, 5, 8, 9],
 }
 
 
@@ -298,7 +296,7 @@ class HighDGraphDataset(Dataset):
         super().__init__()
         mmap_dir = Path(mmap_dir)
         self.x_ego    = np.load(mmap_dir / 'x_ego.npy')                        # (N, T, 6)  ~178 MB → RAM
-        self.x_nb     = np.load(mmap_dir / 'x_nb.npy',       mmap_mode='r')  # (N, T, K, 13) ~3 GB → mmap
+        self.x_nb     = np.load(mmap_dir / 'x_nb.npy',       mmap_mode='r')  # (N, T, K, 10) ~3 GB → mmap
         self.nb_mask  = np.load(mmap_dir / 'nb_mask.npy')                     # (N, T, K) bool ~59 MB → RAM
         self.y        = np.load(mmap_dir / 'y.npy')                           # (N, Tf, 2)  ~99 MB → RAM
         self.x_last   = np.load(mmap_dir / 'x_last_abs.npy')                  # (N, 2)       ~7 MB → RAM
@@ -330,7 +328,7 @@ class HighDGraphDataset(Dataset):
         if self.indices is not None:
             idx = int(self.indices[idx])
         x_ego    = np.array(self.x_ego[idx],    np.float32)   # (T_H, 6)
-        x_nb     = np.array(self.x_nb[idx],     np.float32)   # (T_H, K, 13)
+        x_nb     = np.array(self.x_nb[idx],     np.float32)   # (T_H, K, 10)
         nb_mask  = np.array(self.nb_mask[idx],  bool)         # (T_H, K)
         y        = np.array(self.y[idx],        np.float32)   # (Tf, 2)
         norm_ctr = np.array(self.x_last[idx],   np.float32)   # (2,)

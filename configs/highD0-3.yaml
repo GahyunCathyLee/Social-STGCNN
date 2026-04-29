@@ -1,9 +1,15 @@
 # configs/highd_baseline.yaml
 # Usage: python train.py --config configs/highd_baseline.yaml
 
+# reproducibility
+seed: 3407
+
+# checkpoint
+tag: highD0-3
+
 # dataset
 highd: true
-mmap_dir: data/highD/mmap
+mmap_dir: data/highD/dimI
 splits_dir: data/highD/splits
 feature_mode: baseline        # baseline | importance | Iy | dim | dimI
 
@@ -21,9 +27,9 @@ kernel_size: 3
 lr: 0.01
 lr_sh_rate: 150
 use_lrschd: true
-num_epochs: 250
-batch_size: 128
+num_epochs: 200
+batch_size: 1024
+num_workers: 64
 clip_grad: 1.0
 
-# checkpoint
-tag: highd-baseline
+
