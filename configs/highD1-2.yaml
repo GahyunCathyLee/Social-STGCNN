@@ -27,7 +27,7 @@ kernel_size: 3
 lr: 0.01
 lr_sh_rate: 150
 use_lrschd: true
-num_epochs: 200
+num_epochs: 500
 batch_size: 1024
 num_workers: 64
 clip_grad: 1.0

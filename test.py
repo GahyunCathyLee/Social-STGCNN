@@ -1,6 +1,7 @@
 import os
 import math
 import sys
+import time
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -97,6 +98,91 @@ def print_scenario_results(stats, label_type):
     N = max(1, total_n)
     print(f"|{'Total':^{c_lbl}}|{total_n:^{c_n},}"
           f"|{total_sa/N:^{c_m}.4f}|{total_sf/N:^{c_m}.4f}|{total_sr/N:^{c_m}.4f}|")
+    print(_sep(ws))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Latency measurement
+# ──────────────────────────────────────────────────────────────────────────────
+
+def print_device_info(device):
+    """Print device info that affects inference latency."""
+    print("\n====== Device Info ======")
+    print(f"  PyTorch version : {torch.__version__}")
+    if device.type == "cuda":
+        idx = device.index if device.index is not None else torch.cuda.current_device()
+        props = torch.cuda.get_device_properties(idx)
+        total_gb = props.total_memory / (1024 ** 3)
+        alloc_gb = torch.cuda.memory_allocated(idx) / (1024 ** 3)
+        free_gb = total_gb - alloc_gb
+        print(f"  Device          : {props.name}  (index={idx})")
+        print(f"  CUDA version    : {torch.version.cuda}")
+        print(f"  cuDNN version   : {torch.backends.cudnn.version()}")
+        print(f"  SM count        : {props.multi_processor_count}")
+        print(f"  VRAM            : {total_gb:.1f} GB total  /  {free_gb:.1f} GB free")
+        print(f"  cuDNN benchmark : {torch.backends.cudnn.benchmark}")
+    else:
+        import platform
+        cpu_name = platform.processor() or platform.machine() or "unknown"
+        print(f"  Device          : CPU  ({cpu_name})")
+
+
+@torch.no_grad()
+def measure_latency(fn, device, warmup=1000, iters=10000):
+    """
+    Measure single-inference latency (avg / min / max) in milliseconds.
+
+    CUDA: torch.cuda.Event based timing
+    CPU : time.perf_counter based timing
+    """
+    print(f"  GPU warm-up  : {warmup:,} iters ...", end=" ", flush=True)
+    for _ in range(warmup):
+        fn()
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    print("done")
+
+    times_ms = []
+    print(f"  Measurement  : {iters:,} iters ...", end=" ", flush=True)
+
+    if device.type == "cuda":
+        starter = torch.cuda.Event(enable_timing=True)
+        ender = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        for _ in range(iters):
+            starter.record()
+            fn()
+            ender.record()
+            torch.cuda.synchronize()
+            times_ms.append(starter.elapsed_time(ender))
+    else:
+        for _ in range(iters):
+            t0 = time.perf_counter()
+            fn()
+            times_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    print("done")
+
+    arr = np.asarray(times_ms, dtype=np.float64)
+    return {
+        "avg_ms": float(arr.mean()),
+        "min_ms": float(arr.min()),
+        "max_ms": float(arr.max()),
+    }
+
+
+def print_latency(lat, batch_size, warmup, iters):
+    """Print latency avg / min / max table."""
+    c = 15
+    ws = [c, c, c]
+
+    print()
+    print(f"  Batch size : {batch_size}   Warmup : {warmup:,}   Measurement : {iters:,}")
+    print()
+    print(_sep(ws))
+    print(f"|{'Avg (ms)':^{c}}|{'Min (ms)':^{c}}|{'Max (ms)':^{c}}|")
+    print(_sep(ws))
+    print(f"|{lat['avg_ms']:^{c}.2f}|{lat['min_ms']:^{c}.2f}|{lat['max_ms']:^{c}.2f}|")
     print(_sep(ws))
 
 
@@ -254,7 +340,12 @@ test_parser.add_argument('--num_workers', type=int, default=64,
                          help='number of DataLoader worker processes')
 test_parser.add_argument('--scenario_labels', type=str, default=None,
                          help='Path to scenario_labels.csv for per-scenario breakdown')
+test_parser.add_argument('--measure_time', action='store_true',
+                         help='Measure inference latency (1,000 warmup + 10,000 iters)')
 test_args = load_config_and_parse(test_parser)
+
+LATENCY_WARMUP = 1_000
+LATENCY_ITERS  = 10_000
 
 if test_args.checkpoint_glob is None:
     tag = getattr(test_args, 'tag', None)
@@ -320,6 +411,37 @@ for feta in range(len(paths)):
                 output_feat=args.output_size, seq_len=args.obs_seq_len,
                 kernel_size=args.kernel_size, pred_seq_len=args.pred_seq_len).cuda()
         model.load_state_dict(torch.load(model_path))
+        model.eval()
+
+        if test_args.measure_time:
+            device = next(model.parameters()).device
+            print_device_info(device)
+
+            # Single sample (batch_size=1) for accurate per-inference latency.
+            sample = dset_test[0]
+            V_obs_l = sample[6].unsqueeze(0).to(device)
+            A_obs_l = sample[7].unsqueeze(0).to(device)
+            V_obs_tmp_l = V_obs_l.permute(0, 3, 1, 2)
+
+            @torch.no_grad()
+            def _infer():
+                V_pred_l, _ = model(V_obs_tmp_l, A_obs_l)
+                V_pred_l.permute(0, 2, 3, 1)
+
+            print(f"\n====== Inference Latency ======")
+            lat = measure_latency(
+                _infer,
+                device,
+                warmup=LATENCY_WARMUP,
+                iters=LATENCY_ITERS,
+            )
+            print_latency(
+                lat,
+                batch_size=1,
+                warmup=LATENCY_WARMUP,
+                iters=LATENCY_ITERS,
+            )
+            continue
 
         # Build scenario labels
         sample_labels = None
